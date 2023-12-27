@@ -1,21 +1,49 @@
 mod vec3;
 mod ppm;
+mod scene;
+mod bvh;
 
+use pk_stl::geometry::Triangle;
 use rand::thread_rng;
 use vec3::Vec3;
 use rand::prelude::*;
 use rayon::prelude::*;
+use serde::{Serialize, Deserialize};
 
-enum Shape {
+#[derive(Serialize, Deserialize, Debug)]
+pub enum RenderMode {
+    Raytracing,
+    Normals,
+    Depth,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum Shape {
     Sphere{
         center: Vec3, 
         radius: f32,
         material: Material,
+    },
+    Aabb{
+        center: Vec3,
+        size: Vec3,
+        material: Material,
+    },
+    Plane{
+        normal: Vec3,
+        distance: f32,
+        material: Material,
+    },
+    Triangle{
+        v0: Vec3,
+        v1: Vec3,
+        v2: Vec3,
+        material: Material,
     }
 }
 
-#[derive(Clone)]
-enum Material {
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum Material {
     Lambertian {
         albedo: Vec3,
     },
@@ -26,6 +54,9 @@ enum Material {
     Dielectric {
         //albedo: Vec3,
         ir: f32,
+    },
+    Light {
+        albedo: Vec3,
     } 
 }
 
@@ -37,111 +68,42 @@ struct HitRecord {
     material: Material,
 }
 
-fn scene1() -> Vec<Shape> {
-    let material_ground = Material::Lambertian { albedo: Vec3{x: 0.8, y: 0.8, z: 0.0} };
-    let material_center = Material::Lambertian { albedo: Vec3{x: 0.7, y: 0.3, z: 0.3} };
-    let material_left   = Material::Metal { albedo: Vec3{x: 0.8, y: 0.8, z: 0.8}, fuzz: 0.1 };
-    let material_right  = Material::Metal { albedo: Vec3{x: 0.8, y: 0.6, z: 0.2}, fuzz: 0.9 };
-    let material_glass  = Material::Dielectric { ir: 1.5 };
-    
-    vec![
-        Shape::Sphere { center: Vec3{ x: 0.0, y: -100.5, z: -1.0 }, radius: 100.0, material: material_ground },
-        Shape::Sphere { center: Vec3{ x: 0.0, y: 0.0, z: -1.0 }, radius: 0.5, material: material_center },
-        Shape::Sphere { center: Vec3{ x: 1.0, y: 0.0, z: -1.0 }, radius: 0.5, material: material_right },
-        Shape::Sphere { center: Vec3{ x: -1.0, y: 0.0, z: -1.0 }, radius: 0.5, material: material_left },
-    ]
-}
-
-fn scene_book() -> Vec<Shape> {
-    let mut world : Vec<Shape> = vec![];
-    //ground
-    world.push(Shape::Sphere { 
-        center: Vec3::new(0.0,-1000.0,0.0), 
-        radius: 1000.0, 
-        material: Material::Lambertian { albedo: Vec3::new(0.5, 0.5, 0.5) } 
-    });
-
-    let mut rng =  thread_rng();
-    for a in -11..11 {
-        for b in -11..11 {
-            let choose_mat = rng.gen_range(0.0..1.0);
-            let center: Vec3 = Vec3::new(a as f32 + rng.gen_range(0.0..0.9), 0.2, b as f32 + rng.gen_range(0.0..0.9));
-
-            if center.sub(Vec3::new(4.0, 0.2, 0.0)).len() > 0.9 {
-                if choose_mat < 0.8 {
-                    // diffuse
-                    world.push(Shape::Sphere { 
-                        center: center, 
-                        radius: 0.2, 
-                        material: Material::Lambertian { albedo: rand_unit_vec3(&mut rng).scale_by_vec(rand_unit_vec3(&mut rng)) }
-                    });
-                } else if choose_mat < 0.95 {
-                    // metal
-                    world.push(Shape::Sphere { 
-                        center: center, 
-                        radius: 0.2, 
-                        material: Material::Metal { 
-                            albedo: Vec3 { 
-                                x: rng.gen_range(0.5..1.0), 
-                                y: rng.gen_range(0.5..1.0), 
-                                z: rng.gen_range(0.5..1.0) 
-                            },
-                            fuzz: rng.gen_range(0.0..0.5), 
-                        }
-                    });
-                } else {
-                    // glass
-                    world.push(Shape::Sphere { 
-                        center: center, 
-                        radius: 0.2, 
-                        material: Material::Dielectric { ir: 1.5 }
-                    });
-                }
-            }
-        }
-    }
-
-    world.push(Shape::Sphere { 
-        center: Vec3::new(0.0, 1.0, 0.0), 
-        radius: 1.0, 
-        material: Material::Dielectric { ir: 1.5 }
-    });
-
-    world.push(Shape::Sphere { 
-        center: Vec3::new(0.0, 1.0, 0.0), 
-        radius: 1.0, 
-        material: Material::Dielectric { ir: 1.5 }
-    });
-
-    world.push(Shape::Sphere { 
-        center: Vec3::new(-4.0, 1.0, 0.0), 
-        radius: 1.0, 
-        material: Material::Lambertian { albedo: Vec3::new(0.4, 0.2, 0.1) }
-    });
-
-    world.push(Shape::Sphere { 
-        center: Vec3::new(4.0, 1.0, 0.0), 
-        radius: 1.0, 
-        material: Material::Metal { albedo: Vec3::new(0.4, 0.2, 0.1), fuzz: 0.0 }
-    });
-
-    world
-}
-
 fn main() {
-    
-    let world = scene_book();
+    let mut scene = scene::load("scene_triangle.yaml").expect("Failed to load scene");
 
-    let aspect_ratio = 16.0 / 9.0;
-    let image_width = 400;
-    let samples_per_pixel = 50;
-    let max_depth         = 10;
-    let vertical_fov = 20.0;  // Vertical view angle (field of view)
-    let lookfrom = Vec3::new(13.0,2.0, 3.0);  // Point camera is looking from
-    let lookat   = Vec3::new(0.0,0.0, 0.0);   // Point camera is looking at
-    let vup      = Vec3::new(0.0,1.0, 0.0);     // Camera-relative "up" direction
-    let defocus_angle = 0.6;  // Variation angle of rays through each pixel
-    let focus_dist = 10.0;    // Distance from camera lookfrom point to plane of perfect focus
+    let mut model = load_stl("model.stl", &Material::Lambertian { albedo: Vec3 { x: 1.0, y: 1.0, z: 1.0 } }).unwrap();
+    let offset = Vec3{ x: 0.0, y: 0.0, z: 100.0 };
+    let mut model = model.into_iter()
+    .map(|t| match t {
+        Shape::Triangle { v0, v1, v2, material } => Shape::Triangle { v0: v0.add(offset), v1: v1.add(offset), v2: v2.add(offset), material },
+        _ => todo!(),
+    }).collect();
+    scene.world.append(&mut model);
+
+    println!("primitives: {}", scene.world.len());
+    //let world = scene1();
+
+    // let aspect_ratio = 16.0 / 9.0;
+    // let image_width = 400;
+    // let samples_per_pixel = 50;
+    // let max_depth         = 10;
+    // let vertical_fov = 20.0;  // Vertical view angle (field of view)
+    // let lookfrom = Vec3::new(13.0,2.0, 3.0);  // Point camera is looking from
+    // let lookat   = Vec3::new(0.0,0.0, 0.0);   // Point camera is looking at
+    // let vup      = Vec3::new(0.0,1.0, 0.0);     // Camera-relative "up" direction
+    // let defocus_angle = 0.6;  // Variation angle of rays through each pixel
+    // let focus_dist = 10.0;    // Distance from camera lookfrom point to plane of perfect focus
+
+    let aspect_ratio = scene.aspect_ratio;
+    let image_width = scene.image_width;
+    let samples_per_pixel = scene.samples_per_pixel; 
+    let max_depth         = scene.max_depth; 
+    let vertical_fov = scene.vertical_fov; // Vertical view angle (field of view)
+    let lookfrom = scene.lookfrom; // Point camera is looking from
+    let lookat   = scene.lookat; // Point camera is looking at
+    let vup      = scene.vup; // Camera-relative "up" direction
+    let defocus_angle = scene.defocus_angle; // Variation angle of rays through each pixel
+    let focus_dist = scene.focus_dist; // Distance from camera lookfrom point to plane of perfect focus
 
     // Calculate the image height, and ensure that it's at least 1.
     let image_height = (image_width as f32 / aspect_ratio) as u32;
@@ -178,6 +140,11 @@ fn main() {
     let defocus_disk_u = u.scale(defocus_radius);  // Defocus disk horizontal radius
     let defocus_disk_v = v.scale(defocus_radius);  // Defocus disk vertical radius
 
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(scene.threads.unwrap_or(16) as usize)
+        .build_global()
+        .unwrap();
+
     let mut pixels :Vec<Vec3>= vec![];
     for h in 0..image_height {
         if h % 10 == 0 { println!("Scanlines remaining: {}", image_height - h); }
@@ -201,13 +168,17 @@ fn main() {
                     false => camera_center.add(defocus_disk_sample(defocus_disk_u, defocus_disk_v, &mut rng)),
                 };
 
-
                 let sample_ray = Ray {
                     origin: defocus,
-                    direction: pixel_center.sub(defocus).add(pixel_sample_square),
+                    direction: pixel_center.sub(defocus).add(pixel_sample_square).unit_vector(),
                 };
 
-                pixel = pixel.add(ray_color(&sample_ray, &world, max_depth, &mut rng));
+                let sample = match scene.render_mode {
+                    RenderMode::Raytracing => ray_color(&sample_ray, &scene.world, max_depth, &mut rng),
+                    RenderMode::Normals => ray_normal(&sample_ray, &scene.world, &mut rng),
+                    RenderMode::Depth => ray_depth(&sample_ray, &scene.world, &mut rng),
+                };
+                pixel = pixel.add(sample);
             }
             pixel.div_scale(samples_per_pixel as f32)
        }).collect(); 
@@ -217,48 +188,6 @@ fn main() {
 
     ppm::write("output.ppm", image_width as usize, image_height as usize, &pixels).expect("Could not write PPM");
     println!("Done");
-}
-
-fn rand_unit_vec3(rng: &mut ThreadRng) -> Vec3 {
-    Vec3{
-        x: rng.gen_range(0.0..1.0),
-        y: rng.gen_range(0.0..1.0),
-        z: rng.gen_range(0.0..1.0),
-    }
-}
-
-fn rand_vec3(min: f32, max: f32, rng: &mut ThreadRng) -> Vec3 {
-    Vec3{
-        x: rng.gen_range(min..max),
-        y: rng.gen_range(min..max),
-        z: rng.gen_range(min..max),
-    }
-}
-
-fn rand_unit_vec3_sphere(rng: &mut ThreadRng) -> Vec3 {
-    loop {
-        let unit = rand_vec3(-1.0, 1.0, rng);
-        if unit.len_squared() < 1.0 {
-            return unit.unit_vector();
-        }
-    }
-}
-
-fn random_on_hemisphere(normal: Vec3, rng: &mut ThreadRng) -> Vec3 {
-    let on_unit_sphere = rand_unit_vec3_sphere(rng);
-    match on_unit_sphere.dot(normal) > 0.0 {
-        true => on_unit_sphere,
-        false => on_unit_sphere.reverse(),// In the same hemisphere as the normal
-    } 
-}
-
-fn random_in_unit_disk(rng: &mut ThreadRng) -> Vec3 {
-    loop {
-        let p = Vec3::new(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0), 0.0);
-        if p.len_squared() < 1.0 {
-            return p;
-        }
-    }
 }
 
 fn defocus_disk_sample(defocus_disk_u: Vec3, defocus_disk_v: Vec3, rng: &mut ThreadRng) -> Vec3 {
@@ -287,28 +216,157 @@ fn hit_sphere(center: Vec3, radius: f32, r: &Ray, interval : Interval, material:
         }
     }
 
-    //TODO: fix constrution
-    let mut hit = HitRecord{
-        t:           root,
-        p:           r.at(root),
-        normal:      r.at(root).sub(center).div_scale(radius),
-        face_normal: false,
-        material: material.clone(),
-    };
+    let t = root;
+    let p = r.at(root);
+    let normal = p.sub(center).div_scale(radius);
+    let (face_normal, normal) = face_normal(&r, normal);
 
-    (hit.face_normal, hit.normal) = face_normal(&r, hit.normal);
-    Some(hit)
+    Some(HitRecord{t, p, face_normal, normal, material: material.clone()})
+}
+
+fn hit_aabb(center: Vec3, size: Vec3, r: &Ray, interval : Interval, material: &Material) -> Option<HitRecord> {
+    //bool RayAABBSimple(Ray ray, AABB aabb, float tmin, float tmax) {
+    let aabb_min = center.sub(size.scale(0.5));
+    let aabb_max = center.add(size.scale(0.5));
+
+    let mut tmin = interval.min;
+    let mut tmax = interval.max;
+
+    let mut hit = Vec3::new(0.0,0.0,0.0);
+
+    for a in 0..3 {
+        let inv_d = 1.0 / r.direction.get(a);
+        let mut t0 = (aabb_min.get(a) - r.origin.get(a)) * inv_d;
+        let mut t1 = (aabb_max.get(a) - r.origin.get(a)) * inv_d;
+        if inv_d < 0.0 {
+            let temp = t1;
+            t1 = t0;
+            t0 = temp;
+        }
+        
+        if t0 > tmin {
+            tmin = t0;
+        }
+        if t1 < tmax {
+            tmax = t1;
+        }
+        if tmax <= tmin {
+            return None;
+        }
+    }
+
+    Some(HitRecord { 
+        t: hit.len(), 
+        p: r.at(tmin), 
+        face_normal: true, 
+        normal: Vec3 { x: 1.0, y: 1.0, z: 1.0 }.unit_vector(), 
+        material: material.clone()
+    })
+}
+
+fn hit_plane(normal: Vec3, distance: f32, r: &Ray, interval : Interval, material: &Material) -> Option<HitRecord> {
+    //https://gdbooks.gitbooks.io/3dcollisions/content/Chapter3/raycast_plane.html
+    //t = (plane.distance - DOT(ray.position, plane.normal) / DOT(ray.normal, plane.normal)
+    let normal = normal.unit_vector();
+    let t = distance - r.origin.dot(normal) / r.direction.dot(normal);
+
+    if interval.contains(t) {
+        let (face_normal, normal) = face_normal(&r, normal);
+
+        Some(HitRecord { 
+            t: t, 
+            p: r.at(t), 
+            face_normal, 
+            normal, 
+            material: material.clone()
+        })
+    }
+    else {
+        None
+    }
+}
+
+//https://www.scratchapixel.com/lessons/3d-basic-rendering/ray-tracing-rendering-a-triangle/ray-triangle-intersection-geometric-solution.html
+fn hit_triangle(orig: Vec3, dir: Vec3, v0: Vec3, v1: Vec3, v2: Vec3, material: &Material) -> Option<HitRecord>
+{
+    // compute the plane's normal
+    let v0v1 = v1.sub(v0);
+    let v0v2 = v2.sub(v0);
+    // no need to normalize
+    let N = v0v1.cross(v0v2); // N
+    let area2 = N.len();
+ 
+    // Step 1: finding P
+    
+    // check if the ray and plane are parallel.
+    let NdotRayDirection = N.dot(dir);
+    if NdotRayDirection.abs() < f32::EPSILON {// almost 0
+        return None; // they are parallel, so they don't intersect! 
+    } 
+
+    // compute d parameter using equation 2
+    let d = -N.dot(v0);
+    
+    // compute t (equation 3)
+    let t = -(N.dot(orig) + d) / NdotRayDirection;
+    
+    // check if the triangle is behind the ray
+    if t < 0.0 { return None; } // the triangle is behind
+ 
+    // compute the intersection point using equation 1
+    let P = orig.add(dir.scale(t));
+ 
+    // Step 2: inside-outside test
+    //Vec3f C; // vector perpendicular to triangle's plane
+ 
+    // edge 0
+    let edge0 = v1.sub(v0); 
+    let vp0 = P.sub(v0);
+    let C = edge0.cross(vp0);
+    if N.dot(C) < 0.0 {
+        return None; // P is on the right side
+    }
+
+    // edge 1
+    let edge1 = v2.sub(v1); 
+    let vp1 = P.sub(v1);
+    let C = edge1.cross(vp1);
+    if N.dot(C) < 0.0 {
+        return None; // P is on the right side
+    }  
+ 
+    // edge 2
+    let edge2 = v0.sub(v2); 
+    let vp2 = P.sub(v2);
+    let C = edge2.cross(vp2);
+    if N.dot(C) < 0.0 {
+        return None; // P is on the right side;
+    } 
+
+    let r = Ray{origin: orig, direction: dir };
+    let (face_normal, normal) = face_normal(&r, N);
+    Some(HitRecord { 
+        t: t, 
+        p: r.at(t), 
+        face_normal, 
+        normal, 
+        material: material.clone()
+    }) // this ray hits the triangle
 }
 
 fn ray_color(ray : &Ray, world: &Vec<Shape>, depth: u32, rng: &mut ThreadRng) -> Vec3 {
     // If we've exceeded the ray bounce limit, no more light is gathered.
-    if depth <= 0 { return Vec3{ x: 0.0, y: 0.0, z: 0.0 }}
+    if depth <= 0 { return Vec3{ x: 0.0, y: 0.0, z: 0.0 } }
 
     let mut closest_hit = f32::INFINITY;
     let mut t : Option<HitRecord> = None;
     for shape in world {
+        let interval = Interval { min: 0.001, max: 100.0};
         let hit = match shape {
-            Shape::Sphere { center, radius, material } => hit_sphere(center.clone(), radius.clone(), &ray, Interval { min: 0.001, max: 100.0}, material),
+            Shape::Sphere { center, radius, material } => hit_sphere(center.clone(), radius.clone(), &ray, interval, material),
+            Shape::Aabb { center, size, material } => hit_aabb(center.clone(), size.clone(), &ray, interval, material),
+            Shape::Plane { normal, distance, material } => hit_plane(*normal, *distance, &ray, interval, material),
+            Shape::Triangle { v0, v1, v2, material } => hit_triangle(ray.origin, ray.direction, *v0, *v1, *v2, material),
         };
 
         if let Some(hr) = &hit{
@@ -320,6 +378,10 @@ fn ray_color(ray : &Ray, world: &Vec<Shape>, depth: u32, rng: &mut ThreadRng) ->
     };
 
     if let Some(hit) = t {
+        if let Material::Light { albedo } = hit.material {
+            return albedo;
+        }
+
         return match scatter(ray, &hit, rng) {
             Some((ray, attenuation)) => {
                 return ray_color(&ray, &world, depth-1,  rng).scale_by_vec(attenuation)
@@ -349,6 +411,66 @@ fn ray_color(ray : &Ray, world: &Vec<Shape>, depth: u32, rng: &mut ThreadRng) ->
     let white_weight = white.scale(1.0 - a);
     let blue_weight  = blue.scale(a);
     white_weight.add(blue_weight)
+}
+
+fn ray_normal(ray : &Ray, world: &Vec<Shape>, _rng: &mut ThreadRng) -> Vec3 {
+    let mut closest_hit = f32::INFINITY;
+    let mut t : Option<HitRecord> = None;
+    for shape in world {
+        let interval = Interval { min: 0.001, max: 100.0};
+        let hit = match shape {
+            Shape::Sphere { center, radius, material } => hit_sphere(center.clone(), radius.clone(), &ray, interval, material),
+            Shape::Aabb { center, size, material } => hit_aabb(center.clone(), size.clone(), &ray, interval, material),
+            Shape::Plane { normal, distance, material } => hit_plane(*normal, *distance, &ray, interval, material),
+            Shape::Triangle { v0, v1, v2, material } => hit_triangle(ray.origin, ray.direction, *v0, *v1, *v2, material),
+        };
+
+        if let Some(hr) = &hit{
+            if hr.t < closest_hit {
+                closest_hit = hr.t;
+                t = hit;
+            }
+        }
+    };
+
+    match t {
+        Some(hit) => hit.normal,
+        None => Vec3 {
+            x: 0.0, 
+            y: 0.0, 
+            z: 0.0, 
+        },
+    }
+}
+
+fn ray_depth(ray : &Ray, world: &Vec<Shape>, rng: &mut ThreadRng) -> Vec3 {
+    let mut closest_hit = f32::INFINITY;
+    let mut t : Option<HitRecord> = None;
+    for shape in world {
+        let interval = Interval { min: 0.001, max: 100.0};
+        let hit = match shape {
+            Shape::Sphere { center, radius, material } => hit_sphere(center.clone(), radius.clone(), &ray, interval, material),
+            Shape::Aabb { center, size, material } => hit_aabb(center.clone(), size.clone(), &ray, interval, material),
+            Shape::Plane { normal, distance, material } => hit_plane(*normal, *distance, &ray, interval, material),
+            Shape::Triangle { v0, v1, v2, material } => hit_triangle(ray.origin, ray.direction, *v0, *v1, *v2, material),
+        };
+
+        if let Some(hr) = &hit{
+            if hr.t < closest_hit {
+                closest_hit = hr.t;
+                t = hit;
+            }
+        }
+    };
+
+    match t {
+        Some(hit) => Vec3::new(1.0, 1.0, 1.0).scale(1.0 / hit.t),
+        None => Vec3 {
+            x: 0.0, 
+            y: 0.0, 
+            z: 0.0, 
+        },
+    }
 }
 
 fn scatter(ray: &Ray, hit: &HitRecord, rng: &mut ThreadRng) -> Option<(Ray, Vec3)> {
@@ -408,8 +530,8 @@ fn scatter(ray: &Ray, hit: &HitRecord, rng: &mut ThreadRng) -> Option<(Ray, Vec3
                 z: 1.0,
             })) 
         },
+        Material::Light { albedo } => None,
     }
-   
 }
 
 fn reflect(v: Vec3, n: Vec3) -> Vec3 {
@@ -420,7 +542,6 @@ fn reflect(v: Vec3, n: Vec3) -> Vec3 {
 fn refract(uv: Vec3, n: Vec3, etai_over_etat: f32) -> Vec3{
     let cos_theta = uv.reverse().dot(n).min(1.0);
     let r_out_perp = uv.add_scalar(cos_theta).scale_by_vec(n).scale(etai_over_etat);
-    // vec3 r_out_parallel = -sqrt(fabs(1.0 - r_out_perp.length_squared())) * n;
     let r_out_parallel_scale = -(1.0 - r_out_perp.len_squared()).abs().sqrt();
     let r_out_parallel = n.scale(r_out_parallel_scale);
     return r_out_perp.add(r_out_parallel);
@@ -488,4 +609,55 @@ impl Interval {
         if x > self.max { return self.max; }
         return x;
     }
+}
+
+
+fn rand_unit_vec3(rng: &mut ThreadRng) -> Vec3 {
+    Vec3{
+        x: rng.gen_range(0.0..1.0),
+        y: rng.gen_range(0.0..1.0),
+        z: rng.gen_range(0.0..1.0),
+    }
+}
+
+fn rand_vec3(min: f32, max: f32, rng: &mut ThreadRng) -> Vec3 {
+    Vec3{
+        x: rng.gen_range(min..max),
+        y: rng.gen_range(min..max),
+        z: rng.gen_range(min..max),
+    }
+}
+
+fn rand_unit_vec3_sphere(rng: &mut ThreadRng) -> Vec3 {
+    loop {
+        let unit = rand_vec3(-1.0, 1.0, rng);
+        if unit.len_squared() < 1.0 {
+            return unit.unit_vector();
+        }
+    }
+}
+
+fn random_on_hemisphere(normal: Vec3, rng: &mut ThreadRng) -> Vec3 {
+    let on_unit_sphere = rand_unit_vec3_sphere(rng);
+    match on_unit_sphere.dot(normal) > 0.0 {
+        true => on_unit_sphere,
+        false => on_unit_sphere.reverse(),// In the same hemisphere as the normal
+    } 
+}
+
+fn random_in_unit_disk(rng: &mut ThreadRng) -> Vec3 {
+    loop {
+        let p = Vec3::new(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0), 0.0);
+        if p.len_squared() < 1.0 {
+            return p;
+        }
+    }
+}
+
+fn load_stl(file: &str, material: &Material) -> Option<Vec<Shape>> {
+    let content = std::fs::read(file).ok()?;
+    let stl = pk_stl::parse_stl(&content).ok()?;
+    Some(stl.triangles.iter()
+        .map(|t|Shape::Triangle { v0: t.vertices[0].into(), v1: t.vertices[1].into(), v2: t.vertices[2].into(), material: material.clone() })
+        .collect())
 }

@@ -1,6 +1,6 @@
+use serde::{Serialize, Deserialize};
 
-
-#[derive(Copy, Clone, Debug, Default)]
+#[derive(Copy, Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Vec3 {
     pub x: f32,
     pub y: f32,
@@ -25,6 +25,15 @@ impl Vec3 {
             0 => self.x,
             1 => self.y,
             2 => self.z,
+            _ => panic!("Out of bounds of vec"),
+        }
+    }
+
+    pub fn set(&mut self, i: u32, value: f32) {
+        match i {
+            0 => self.x = value,
+            1 => self.y = value,
+            2 => self.z = value,
             _ => panic!("Out of bounds of vec"),
         }
     }
@@ -108,6 +117,28 @@ impl Vec3 {
         self.x.abs() < s && 
         self.y.abs() < s && 
         self.z.abs() < s
+    }
+
+    pub fn min(self, other: &Self) -> Self {
+        Vec3 { 
+            x: self.x.min(other.x),
+            y: self.y.min(other.y),
+            z: self.z.min(other.z),
+        }
+    }
+
+    pub fn max(self, other: &Self) -> Self {
+        Vec3 { 
+            x: self.x.max(other.x),
+            y: self.y.max(other.y),
+            z: self.z.max(other.z),
+        }
+    }
+}
+
+impl From<pk_stl::geometry::Vec3> for Vec3 {
+    fn from(value: pk_stl::geometry::Vec3) -> Self {
+        Self { x: value.x, y: value.y, z: value.z }
     }
 }
 

@@ -1,0 +1,84 @@
+#camera
+aspect_ratio: 1.77777777777777777
+image_width: 400
+samples_per_pixel: 50
+max_depth:  10
+vertical_fov: 80.0  # Vertical view angle (field of view)
+lookfrom: # Point camera is looking from
+  x: 0.0
+  y: 0.0
+  z: -3.0  
+lookat: # Point camera is looking at
+  x: 0
+  y: 0
+  z: 0
+vup: # Camera-relative "up" direction
+  x: 0
+  y: 1
+  z: 0
+defocus_angle: 0.0  # Variation angle of rays through each pixel
+focus_dist: 10.0 
+render_mode: Depth
+
+#scene
+world: 
+#Ground
+- !Sphere
+  center:
+    x: 0
+    y: -100.5
+    z: 0
+  radius: 100
+  material:
+    !Lambertian
+    albedo:
+      x: 0.8
+      y: 0.8
+      z: 0
+
+#Center
+- !Aabb
+  center:
+    x: 0
+    y: 0
+    z: -1
+  size:
+    x: 0.6
+    y: 0.6
+    z: 0.6
+  material:
+    !Lambertian
+    albedo:
+      x: 0.7
+      y: 0.3
+      z: 0.3
+
+#Right
+- !Sphere
+  center:
+    x: -1
+    y: 0
+    z: -1
+  radius: 0.5
+  material:
+    !Metal
+    fuzz: 0.1
+    albedo:
+      x: 0.8
+      y: 0.8
+      z: 0.8
+
+#Left
+- !Sphere
+  center:
+    x: 1
+    y: 0
+    z: -1
+  radius: 0.5
+  material:
+    !Metal
+    fuzz: 0.5
+    albedo:
+      x: 0.8
+      y: 0.6
+      z: 0.2
