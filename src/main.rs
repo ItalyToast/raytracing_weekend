@@ -3,6 +3,9 @@ mod ppm;
 mod scene;
 mod bvh;
 
+use std::sync::Arc;
+
+use bvh::Bvh;
 use pk_stl::geometry::Triangle;
 use rand::thread_rng;
 use vec3::Vec3;
@@ -17,7 +20,7 @@ pub enum RenderMode {
     Depth,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum Shape {
     Sphere{
         center: Vec3, 
@@ -39,7 +42,7 @@ pub enum Shape {
         v1: Vec3,
         v2: Vec3,
         material: Material,
-    }
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -73,14 +76,17 @@ fn main() {
 
     let mut model = load_stl("model.stl", &Material::Lambertian { albedo: Vec3 { x: 1.0, y: 1.0, z: 1.0 } }).unwrap();
     let offset = Vec3{ x: 0.0, y: 0.0, z: 100.0 };
-    let mut model = model.into_iter()
+    let mut model :Vec<Shape>= model.into_iter()
     .map(|t| match t {
         Shape::Triangle { v0, v1, v2, material } => Shape::Triangle { v0: v0.add(offset), v1: v1.add(offset), v2: v2.add(offset), material },
         _ => todo!(),
     }).collect();
-    scene.world.append(&mut model);
-
+    scene.world.append(&mut model.clone());
+    let bvh = bvh::Bvh::new(model);
+    let abvh: Arc<Bvh> = Arc::new(bvh);
     println!("primitives: {}", scene.world.len());
+
+    
     //let world = scene1();
 
     // let aspect_ratio = 16.0 / 9.0;
@@ -174,9 +180,9 @@ fn main() {
                 };
 
                 let sample = match scene.render_mode {
-                    RenderMode::Raytracing => ray_color(&sample_ray, &scene.world, max_depth, &mut rng),
-                    RenderMode::Normals => ray_normal(&sample_ray, &scene.world, &mut rng),
-                    RenderMode::Depth => ray_depth(&sample_ray, &scene.world, &mut rng),
+                    RenderMode::Raytracing => ray_color(&sample_ray, &scene.world, max_depth, &mut rng, &abvh),
+                    RenderMode::Normals    => ray_normal(&sample_ray, &scene.world, &mut rng),
+                    RenderMode::Depth      => ray_depth(&sample_ray, &scene.world, &mut rng),
                 };
                 pixel = pixel.add(sample);
             }
@@ -232,7 +238,7 @@ fn hit_aabb(center: Vec3, size: Vec3, r: &Ray, interval : Interval, material: &M
     let mut tmin = interval.min;
     let mut tmax = interval.max;
 
-    let mut hit = Vec3::new(0.0,0.0,0.0);
+    let hit = Vec3::new(0.0,0.0,0.0);
 
     for a in 0..3 {
         let inv_d = 1.0 / r.direction.get(a);
@@ -354,7 +360,7 @@ fn hit_triangle(orig: Vec3, dir: Vec3, v0: Vec3, v1: Vec3, v2: Vec3, material: &
     }) // this ray hits the triangle
 }
 
-fn ray_color(ray : &Ray, world: &Vec<Shape>, depth: u32, rng: &mut ThreadRng) -> Vec3 {
+fn ray_color(ray : &Ray, world: &Vec<Shape>, depth: u32, rng: &mut ThreadRng, bvh: &Arc<Bvh>) -> Vec3 {
     // If we've exceeded the ray bounce limit, no more light is gathered.
     if depth <= 0 { return Vec3{ x: 0.0, y: 0.0, z: 0.0 } }
 
@@ -384,7 +390,7 @@ fn ray_color(ray : &Ray, world: &Vec<Shape>, depth: u32, rng: &mut ThreadRng) ->
 
         return match scatter(ray, &hit, rng) {
             Some((ray, attenuation)) => {
-                return ray_color(&ray, &world, depth-1,  rng).scale_by_vec(attenuation)
+                return ray_color(&ray, &world, depth-1, rng, &bvh).scale_by_vec(attenuation)
             },
             None => Vec3 {
                 x: 0.0, 

@@ -1,20 +1,20 @@
 use crate::{vec3::Vec3, Shape, Ray};
 
 // https://jacco.ompf2.com/2022/04/13/how-to-build-a-bvh-part-1-basics/
-struct Bvh {
+pub struct Bvh {
     nodes: Vec<BvhNode>,
+    tri_idx: Vec<u32>,
+    nodes_used: u32,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct BvhNode {
     aabb:  Aabb,
-    index: u32,
-    left:  u32,
-    right:  u32,
+    left_first:  u32,
     count: u32,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct Aabb {
     min: Vec3,
     max: Vec3,
@@ -31,37 +31,53 @@ impl Triangle {
         self.v0.add(self.v1).add(self.v2).scale(0.3333)
     }
 
-    fn intersect(&self, ray: &Ray) -> bool {
-        todo!()
+    fn intersect(&self, ray: &Ray) -> Option<f32> {
+        let edge1 = self.v1.sub(self.v0);
+        let edge2 = self.v2.sub(self.v0);
+        let h = ray.direction.cross(edge2);
+        let a = edge1.dot(h);
+        if a > -0.0001 && a < 0.0001 {
+            return None; // ray parallel to triangle
+        }
+        let f = 1.0 / a;
+        let s = ray.origin.sub(self.v0);
+        let u = f * s.dot(h);
+        if u < 0.0 || u > 1.0 { return None; }
+        let q = s.cross(edge1);
+        let v = f * ray.direction.dot(q);
+        if v < 0.0 || u + v > 1.0 { return None; }
+        let t = f * edge2.dot(q);
+        if t > 0.0001 {
+            return Some(t);
+        }
+        None
     }
 }
 
 impl Bvh {
-    fn new(shapes: Vec<Shape>) -> Bvh {
+    pub fn new(shapes: Vec<Shape>) -> Bvh {
         let tris : Vec<Triangle> = shapes.iter()
             .map(|s| match s {
                 Shape::Triangle { v0, v1, v2, material: _ } => Triangle { v0: v0.clone(), v1: v1.clone(), v2: v2.clone() },
                 _ => todo!(),
             }).collect();
 
-        let mut nodes : Vec<BvhNode> = vec![BvhNode{ 
-            aabb:Aabb { min: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, max: Vec3 { x: 0.0, y: 0.0, z: 0.0 } }, 
-            index: 0, 
-            left: 0, 
-            right: 0, 
-            count: 0 
-        };tris.len() * 2];
+        let mut nodes : Vec<BvhNode> = vec![BvhNode::default(); tris.len() * 2];
 
-        
-        let root = BvhNode{
-            aabb: Aabb { min: Vec3 { x: 0.0, y: 0.0, z: 0.0 }, max: Vec3 { x: 0.0, y: 0.0, z: 0.0 } },
-            index: 0,
-            left: 0,
-            right: 0,
-            count: tris.len() as u32,
-        };
+        let mut root = BvhNode::default();
+        root.count = tris.len() as u32;
+        nodes[0] = root;
 
-        Bvh { nodes: nodes }
+        let mut tri_idx :Vec<u32>= tris.iter()
+            .enumerate()
+            .map(|(i, _)|i as u32)
+            .collect();
+
+        let mut bvh = Bvh { nodes: nodes, tri_idx: vec![], nodes_used: 1 };
+        bvh.update_node_bounds(&tris, &tri_idx, 0);
+        bvh.subdivide(&tris, &mut tri_idx, 0);
+        bvh.tri_idx = tri_idx;
+        bvh
     } 
 
     
@@ -81,11 +97,11 @@ impl Bvh {
 //     Subdivide( rootNodeIdx );
 // }
 
-    fn update_node_bounds(&mut self, tri: Vec<Triangle>, tri_idx: Vec<u32>, nodeid: u32) {
+    fn update_node_bounds(&mut self, tri: &Vec<Triangle>, tri_idx: &Vec<u32>, nodeid: u32) {
         let node = &mut self.nodes[nodeid as usize];
         node.aabb.min = Vec3{ x: 1e30, y: 1e30, z: 1e30 };
         node.aabb.max = Vec3{ x: -1e30, y: -1e30, z: -1e30 };
-        for i in node.index..(node.index + node.count) {
+        for i in node.left_first..(node.left_first + node.count) {
             let leaf_tri_idx = tri_idx[i as usize];
             let leaf_tri = &tri[leaf_tri_idx as usize];
             node.aabb.min = node.aabb.min.min(&leaf_tri.v0);
@@ -97,10 +113,10 @@ impl Bvh {
         }
     }
 
-    fn subdivide(&self, tri: Vec<Triangle>, tri_idx: Vec<u32>, nodeIdx: u32)
+    fn subdivide(&mut self, tri: &Vec<Triangle>, tri_idx: &mut Vec<u32>, node_idx: u32)
     {
         // terminate recursion
-        let node = self.nodes[nodeIdx as usize];
+        let mut node = self.nodes[node_idx as usize].clone();
         if node.count <= 2 {
             return;
         }
@@ -111,56 +127,65 @@ impl Bvh {
         if extent.z > extent.get(axis) { axis = 2 };
         let split_pos = node.aabb.min.get(axis) + extent.get(axis) * 0.5;
         // in-place partition
-        let mut i = node.left;
+        let mut i = node.left_first;
         let mut j = i + node.count - 1;
         while i <= j
         {
-            if tri[tri_idx[i]].centroid[axis] < split_pos {
+            if tri[tri_idx[i as usize] as usize].centroid().get(axis) < split_pos {
                 i += 1;
             } else {
                 tri_idx.swap(i as usize, j as usize);
                 j -= 1;
-                //swap( triIdx[i], triIdx[j--] );
             }
         }
         // abort split if one of the sides is empty
-        let left_count = i - node.firstTriIdx;
+        let left_count = i - node.left_first;
         if left_count == 0 || left_count == node.count {
             return;
         }
         // create child nodes
-        let left_child_idx = nodesUsed + 1;
-        let right_child_idx = nodesUsed + 1;
-        self.nodes[left_child_idx as usize].firstTriIdx = node.firstTriIdx;
+        let left_child_idx = self.nodes_used;
+        self.nodes_used += 1;
+        let right_child_idx = self.nodes_used;
+        self.nodes_used += 1;
+        self.nodes[left_child_idx as usize].left_first = node.left_first;
         self.nodes[left_child_idx as usize].count = left_count;
-        self.nodes[right_child_idx as usize].firstTriIdx = i;
+        self.nodes[right_child_idx as usize].left_first = i;
         self.nodes[right_child_idx as usize].count = node.count - left_count;
-        node.left = left_child_idx;
+        node.left_first = left_child_idx;
         node.count = 0;
-        self.update_node_bounds(tri, tri_idx, left_child_idx);
-        self.update_node_bounds(tri, tri_idx, right_child_idx);
+        self.nodes[node_idx as usize] = node;
+        self.update_node_bounds(tri, &tri_idx, left_child_idx);
+        self.update_node_bounds(tri, &tri_idx, right_child_idx);
         // recurse
         self.subdivide(tri, tri_idx, left_child_idx);
         self.subdivide(tri, tri_idx, right_child_idx);
     }
 
-    fn traverse(&self, tri: &Vec<Triangle>, tri_idx: &Vec<u32>, ray: &Ray, index: u32) -> Vec<u32> {
+    pub fn traverse(&self, tri: &Vec<Triangle>, tri_idx: &Vec<u32>, ray: &Ray) -> Vec<u32> {
+        let mut result :Vec<u32>= vec![];
+        self.traverse_inner(tri, tri_idx, ray, 0, &mut result);
+        result
+    }
+
+    fn traverse_inner(&self, tri: &Vec<Triangle>, tri_idx: &Vec<u32>, ray: &Ray, index: u32, result: &mut Vec<u32>) {
         let node = &self.nodes[index as usize];
         if !node.aabb.intersect(&ray) {
-            return vec![];
+            return;
         }
         if node.is_leaf()
         {
-            for i in node.index..(node.index + node.count) {
-                tri[tri_idx[i as usize] as usize].intersect(&ray);
+            for i in node.left_first..(node.left_first + node.count) {
+                if let Some(_) = tri[tri_idx[i as usize] as usize].intersect(&ray) {
+                    result.push(i);
+                };
             }
         }
         else
         {
-            self.traverse(tri, tri_idx, &ray, node.left);
-            self.traverse(tri, tri_idx, &ray, node.right);
+            self.traverse_inner(tri, tri_idx, &ray, node.left_first, result);
+            self.traverse_inner(tri, tri_idx, &ray, node.left_first + 1, result);
         }
-        todo!()
     }
 }
 
